@@ -94,6 +94,7 @@ export type ApplicationEventRecord = {
 export type ApplicationAlertRecord = ApplicationAlert & {
   applicationId: string;
   createdAt: string;
+  updatedAt: string;
   resolvedAt?: string;
   dedupeKey: string;
 };

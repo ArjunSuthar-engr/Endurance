@@ -334,19 +334,22 @@ export function appendApplicationEvent(input: NewEventInput) {
   persistStore(store);
 }
 
-export function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "resolvedAt">) {
+export function upsertAlert(
+  alert: Omit<ApplicationAlertRecord, "id" | "createdAt" | "updatedAt" | "resolvedAt"> & { id?: string }
+) {
   const store = hydrateTable();
   const existing = store.alerts.find(
-    (item) => item.dedupeKey === alert.dedupeKey && item.applicationId === alert.applicationId
+    (item) =>
+      item.dedupeKey === alert.dedupeKey &&
+      item.applicationId === alert.applicationId &&
+      item.resolvedAt === undefined
   );
   const now = nowIso();
 
   if (existing) {
     existing.message = alert.message;
     existing.severity = alert.severity;
-    existing.createdAt = now;
-    existing.id = alert.id;
-    existing.resolvedAt = undefined;
+    existing.updatedAt = now;
     persistStore(store);
     return existing;
   }
@@ -354,7 +357,8 @@ export function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "r
   const record: ApplicationAlertRecord = {
     ...alert,
     createdAt: now,
-    id: alert.id,
+    updatedAt: now,
+    id: alert.id || createId("alt"),
     resolvedAt: undefined,
   };
 
@@ -363,14 +367,39 @@ export function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "r
   return record;
 }
 
+export function resolveAlert(applicationId: string, dedupeKey: string) {
+  const store = hydrateTable();
+  const now = nowIso();
+  let resolvedCount = 0;
+
+  for (const alert of store.alerts) {
+    if (alert.applicationId === applicationId && alert.dedupeKey === dedupeKey && !alert.resolvedAt) {
+      alert.resolvedAt = now;
+      alert.updatedAt = now;
+      resolvedCount += 1;
+    }
+  }
+
+  persistStore(store);
+  return resolvedCount;
+}
+
 export function clearAlerts(applicationId: string) {
   const store = hydrateTable();
-  store.alerts = store.alerts.filter((item) => item.applicationId !== applicationId);
+  const now = nowIso();
+
+  for (const alert of store.alerts) {
+    if (alert.applicationId === applicationId && !alert.resolvedAt) {
+      alert.resolvedAt = now;
+      alert.updatedAt = now;
+    }
+  }
+
   persistStore(store);
 }
 
 export function getAlertsForApplication(applicationId: string) {
-  return hydrateTable().alerts.filter((item) => item.applicationId === applicationId);
+  return hydrateTable().alerts.filter((item) => item.applicationId === applicationId && !item.resolvedAt);
 }
 
 export function listChecksumsForApplication(applicationId: string) {

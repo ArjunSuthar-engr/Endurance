@@ -143,12 +143,22 @@ export function appendApplicationEvent(input: NewEventInput) {
   return Promise.resolve(demoStore.appendApplicationEvent(input));
 }
 
-export function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "resolvedAt">) {
+export function upsertAlert(
+  alert: Omit<ApplicationAlertRecord, "id" | "createdAt" | "updatedAt" | "resolvedAt"> & { id?: string }
+) {
   if (useBackendStore) {
     return backendStore.upsertAlert(alert);
   }
 
   return Promise.resolve(demoStore.upsertAlert(alert));
+}
+
+export function resolveAlert(applicationId: string, dedupeKey: string) {
+  if (useBackendStore) {
+    return backendStore.resolveAlert(applicationId, dedupeKey);
+  }
+
+  return Promise.resolve(demoStore.resolveAlert(applicationId, dedupeKey));
 }
 
 export function clearAlerts(applicationId: string) {

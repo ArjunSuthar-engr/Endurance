@@ -11,6 +11,7 @@ import {
   getDocumentsForApplication,
   listChecksumsForApplication,
   upsertAlert,
+  resolveAlert,
   writeDocument,
   clearAlerts,
   updateDocument,
@@ -32,6 +33,7 @@ type ActionRequest = {
   fileSize?: number;
   mimeType?: string;
   checksum?: string;
+  dedupeKey?: string;
   contentBase64?: string;
   existingChecksums?: unknown;
   document?: NewDocumentInput;
@@ -122,7 +124,7 @@ export async function GET(request: NextRequest) {
       }
 
       const normalizedUserId = userId ?? "demo-user-student";
-    const ensured = ensureApplicationData(normalizedUserId, applicationId);
+      const ensured = ensureApplicationData(normalizedUserId, applicationId);
       return NextResponse.json({
         application: ensured.application,
         documents: getDocumentsForApplication(applicationId),
@@ -262,6 +264,15 @@ export async function POST(request: NextRequest) {
 
     const alert = upsertAlert(body.alert as never);
     return NextResponse.json({ alert });
+  }
+
+  if (action === "resolve-alert") {
+    if (typeof body.applicationId !== "string" || typeof body.dedupeKey !== "string") {
+      return jsonError("Missing applicationId or dedupeKey");
+    }
+
+    const resolvedCount = resolveAlert(body.applicationId, body.dedupeKey);
+    return NextResponse.json({ resolvedCount });
   }
 
   if (action === "clear-alerts") {

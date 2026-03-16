@@ -33,9 +33,9 @@ Endurance is a student document intake portal for study-abroad applications with
 ## Active Execution Plan
 
 - Active plan file: `implementationplan.md`
-- Current plan step: Step 3 — Automated Authenticity Pipeline (Core Constraint)
-- Current step rationale: UI has been simplified (removed page grid/pattern backgrounds), and Step 3 is now ready to implement.
-- Current step progress: Step 3 is implemented using a server-run authenticity pipeline and immutable check persistence.
+- Current plan step: Step 5 — Real-Time Sync (No Poll-Only UX)
+- Current step rationale: Step 4 rule-based alert persistence is now implemented, so the next gap is replacing poll-only sync with push-based state delivery.
+- Current step progress: Step 4 completed with persisted alert lifecycle and deduplicated required-document rules.
 
 ## Constraint Baseline Lock (Step 0)
 
@@ -62,6 +62,9 @@ Endurance is a student document intake portal for study-abroad applications with
 - `next.config.ts`
 - `implementationplan.md`
 - `src/lib/server-config.ts`
+- `src/lib/application-alert-rules.ts`
+- `src/lib/application-backend-client.ts`
+- `src/lib/server-application-store.ts`
 - `middleware.ts`
 - `src/lib/application-store.ts`
 
@@ -102,6 +105,17 @@ Endurance is a student document intake portal for study-abroad applications with
   - filename intent/risk checks
 - Updated upload flow in `src/lib/student-application-service.ts` so each upload calls server analysis, persists `checks` per document, and then stores final status.
 - New client API contract (`analyzeUpload`) lives in `src/lib/application-backend-client.ts`.
+
+## Step 4 Completion Notes
+
+- Added `src/lib/application-alert-rules.ts` to classify each required document as `missing`, `rejected`, `verifying`, or `verified`.
+- Alert records are now persisted and deduplicated instead of being rebuilt only in memory.
+- Alert lifecycle now preserves history by marking alerts with `resolvedAt` rather than deleting them.
+- Active alert keys now align with the plan:
+  - `missing-documents`
+  - `rejected-documents`
+  - `verification-running`
+- Upload flow again exposes a short verification window so in-progress alerts and requirement states are actually visible in the portal.
 
 ## Immediate Next Changes (when requested)
 1. Add stronger document authenticity checks (OCR / anti-tamper service).

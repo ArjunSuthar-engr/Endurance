@@ -204,7 +204,9 @@ export async function appendApplicationEvent(input: NewEventInput) {
   });
 }
 
-export async function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "resolvedAt">) {
+export async function upsertAlert(
+  alert: Omit<ApplicationAlertRecord, "id" | "createdAt" | "updatedAt" | "resolvedAt"> & { id?: string }
+) {
   const response = await requestJson<{ alert: ApplicationAlertRecord }>(API_BASE, {
     method: "POST",
     body: JSON.stringify({
@@ -213,6 +215,17 @@ export async function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt
     }),
   });
   return response.alert;
+}
+
+export async function resolveAlert(applicationId: string, dedupeKey: string) {
+  return requestJson<{ resolvedCount: number }>(API_BASE, {
+    method: "POST",
+    body: JSON.stringify({
+      action: "resolve-alert",
+      applicationId,
+      dedupeKey,
+    }),
+  }).then((value) => value.resolvedCount);
 }
 
 export async function clearAlerts(applicationId: string) {

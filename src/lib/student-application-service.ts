@@ -1,5 +1,4 @@
 import {
-  documentTypeLabels,
   requiredDocumentTypes,
   type ApplicationAlert,
   type ApplicationState,
@@ -12,16 +11,20 @@ import {
   DEMO_USER_ID,
   appendApplicationEvent,
   appendVerificationChecks,
+  getAlertsForApplication,
   getApplicationRecord,
   getChecksForDocument,
   getDocumentById,
   getDocumentsForApplication,
   listChecksumsForApplication,
+  resolveAlert,
   ensureApplicationData,
+  upsertAlert,
   updateDocument,
   requestUploadSession,
 } from "@/lib/application-data-source";
 import { analyzeUpload } from "@/lib/application-backend-client";
+import { evaluateAlertRules } from "@/lib/application-alert-rules";
 
 type VerificationResult = {
   status: "verified" | "rejected";
@@ -65,51 +68,6 @@ async function readApplicationState(): Promise<AppEntity> {
   };
 }
 
-function buildAlerts(state: {
-  missingDocuments: DocumentType[];
-  documents: UploadedDocument[];
-  progressPercent: number;
-}): ApplicationAlert[] {
-  const alerts: ApplicationAlert[] = [];
-
-  if (state.missingDocuments.length > 0) {
-    const missingNames = state.missingDocuments.map((type) => documentTypeLabels[type]);
-    alerts.push({
-      id: "missing-documents",
-      severity: "warning",
-      message: `Missing required files: ${missingNames.join(", ")}.`,
-    });
-  }
-
-  const rejected = state.documents.filter((doc) => doc.status === "rejected");
-  if (rejected.length > 0) {
-    alerts.push({
-      id: "rejected-documents",
-      severity: "critical",
-      message: `${rejected.length} file(s) rejected by automated authenticity checks.`,
-    });
-  }
-
-  const verifying = state.documents.filter((doc) => doc.status === "verifying");
-  if (verifying.length > 0) {
-    alerts.push({
-      id: "verification-running",
-      severity: "info",
-      message: `${verifying.length} file(s) still in verification queue.`,
-    });
-  }
-
-  if (state.progressPercent === 100) {
-    alerts.push({
-      id: "ready-for-review",
-      severity: "info",
-      message: "All mandatory documents verified. Application is ready for review.",
-    });
-  }
-
-  return alerts;
-}
-
 function latestUpdateDate(entity: AppEntity, fallback: string) {
   let latest = Date.parse(fallback);
 
@@ -131,23 +89,15 @@ async function computeState(): Promise<ApplicationState> {
   await ensureApplicationData(USER_ID, APPLICATION_ID);
   const applicationRecord = await getApplicationRecord(APPLICATION_ID);
   const entity = await readApplicationState();
-  const verifiedByType = new Set<DocumentType>();
-  for (const document of entity.documents) {
-    if (document.status === "verified") {
-      verifiedByType.add(document.documentType);
-    }
-  }
-
-  const missingDocuments = requiredDocumentTypes.filter((type) => !verifiedByType.has(type));
+  const ruleEvaluation = evaluateAlertRules(entity.documents);
+  const verifiedByType = requiredDocumentTypes.filter(
+    (documentType) => ruleEvaluation.requirementStatuses[documentType] === "verified"
+  );
+  const missingDocuments = requiredDocumentTypes.filter((type) => !verifiedByType.includes(type));
   const progressPercent = Math.round(
     ((requiredDocumentTypes.length - missingDocuments.length) / requiredDocumentTypes.length) * 100
   );
-
-  const alerts = buildAlerts({
-    missingDocuments,
-    documents: entity.documents,
-    progressPercent,
-  });
+  const alerts = await syncApplicationAlerts(entity.applicationId, entity.documents);
 
   return {
     applicationId: applicationRecord?.id ?? APPLICATION_ID,
@@ -190,6 +140,36 @@ async function updateDocumentResult(documentId: string, result: VerificationResu
   });
 }
 
+async function syncApplicationAlerts(applicationId: string, documents: UploadedDocument[]) {
+  const evaluation = evaluateAlertRules(documents);
+  const desiredKeys = new Set(evaluation.alerts.map((alert) => alert.dedupeKey));
+  const currentAlerts = await getAlertsForApplication(applicationId);
+
+  for (const alert of evaluation.alerts) {
+    await upsertAlert({
+      applicationId,
+      dedupeKey: alert.dedupeKey,
+      severity: alert.severity,
+      message: alert.message,
+    });
+  }
+
+  for (const alert of currentAlerts) {
+    if (!desiredKeys.has(alert.dedupeKey)) {
+      await resolveAlert(applicationId, alert.dedupeKey);
+    }
+  }
+
+  const nextAlerts = await getAlertsForApplication(applicationId);
+  return nextAlerts.map(
+    (alert): ApplicationAlert => ({
+      id: alert.dedupeKey,
+      severity: alert.severity,
+      message: alert.message,
+    })
+  );
+}
+
 function toBase64(bytes: Uint8Array) {
   const chunkSize = 8192;
   let binary = "";
@@ -225,7 +205,10 @@ export async function enqueueUpload(documentType: DocumentType, file: File) {
     checksum: analysis.checksum,
   });
 
-  await updateDocumentResult(uploadSession.document.id, analysis.result);
+  const verificationDelay = 900 + Math.floor(Math.random() * 1400);
+  setTimeout(() => {
+    void updateDocumentResult(uploadSession.document.id, analysis.result);
+  }, verificationDelay);
 
   return { documentId: uploadSession.document.id, uploadToken: uploadSession.token };
 }
