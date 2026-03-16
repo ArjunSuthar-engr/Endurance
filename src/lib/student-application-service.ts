@@ -7,6 +7,7 @@ import {
   type UploadedDocument,
   type VerificationCheck,
 } from "@/lib/student-application-schema";
+import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, MIN_FILE_SIZE_BYTES, getFileExtension } from "@/lib/document-policy";
 import {
   DEMO_APPLICATION_ID,
   DEMO_USER_ID,
@@ -19,8 +20,8 @@ import {
   listChecksumsForApplication,
   ensureApplicationData,
   updateDocument,
-  writeDocument,
-} from "@/lib/application-store";
+  requestUploadSession,
+} from "@/lib/application-data-source";
 
 type VerificationResult = {
   status: "verified" | "rejected";
@@ -37,27 +38,7 @@ type AppEntity = {
 const APPLICATION_ID = DEMO_APPLICATION_ID;
 const USER_ID = DEMO_USER_ID;
 
-const MIN_FILE_SIZE_BYTES = 20 * 1024;
-const MAX_FILE_SIZE_BYTES = 12 * 1024 * 1024;
 const MIN_SCORE_TO_VERIFY = 70;
-
-const allowedMimeTypes: Record<DocumentType, string[]> = {
-  passport: ["application/pdf", "image/jpeg", "image/png"],
-  transcript: ["application/pdf", "image/jpeg", "image/png"],
-  bankStatement: ["application/pdf", "image/jpeg", "image/png"],
-  statementOfPurpose: ["application/pdf"],
-  resume: ["application/pdf"],
-  englishTest: ["application/pdf", "image/jpeg", "image/png"],
-};
-
-const allowedExtensions: Record<DocumentType, string[]> = {
-  passport: [".pdf", ".jpg", ".jpeg", ".png"],
-  transcript: [".pdf", ".jpg", ".jpeg", ".png"],
-  bankStatement: [".pdf", ".jpg", ".jpeg", ".png"],
-  statementOfPurpose: [".pdf"],
-  resume: [".pdf"],
-  englishTest: [".pdf", ".jpg", ".jpeg", ".png"],
-};
 
 const filenameSignals: Record<DocumentType, string[]> = {
   passport: ["passport"],
@@ -73,11 +54,6 @@ const magicSignatures = {
   png: [0x89, 0x50, 0x4e, 0x47],
   jpg: [0xff, 0xd8, 0xff],
 };
-
-function getExtension(fileName: string) {
-  const match = fileName.toLowerCase().match(/\.[a-z0-9]+$/);
-  return match ? match[0] : "";
-}
 
 function hasSignature(bytes: Uint8Array, signature: number[]) {
   if (bytes.length < signature.length) {
@@ -134,29 +110,25 @@ function expectedSignaturesByExtension(extension: string): Array<"pdf" | "png" |
   return [];
 }
 
-function withDocumentChecks(document: UploadedDocument): UploadedDocument {
-  if (document.checks.length > 0) {
-    return document;
-  }
-
-  const persistedChecks = getChecksForDocument(document.id);
-  if (persistedChecks.length === 0) {
+async function withDocumentChecks(document: UploadedDocument): Promise<UploadedDocument> {
+  const checks = await getChecksForDocument(document.id);
+  if (checks.length === 0) {
     return document;
   }
 
   return {
     ...document,
-    checks: persistedChecks,
+    checks,
   };
 }
 
-function readApplicationState(): AppEntity {
-  const persisted = getApplicationRecord(APPLICATION_ID);
-  const documents = getDocumentsForApplication(APPLICATION_ID).map(withDocumentChecks);
+async function readApplicationState(): Promise<AppEntity> {
+  const persisted = await getApplicationRecord(APPLICATION_ID);
+  const documents = await Promise.all((await getDocumentsForApplication(APPLICATION_ID)).map(withDocumentChecks));
 
   const hasFallback = persisted && persisted.id;
   if (!hasFallback) {
-    ensureApplicationData(USER_ID, APPLICATION_ID);
+    await ensureApplicationData(USER_ID, APPLICATION_ID);
   }
 
   return {
@@ -227,10 +199,10 @@ function latestUpdateDate(entity: AppEntity, fallback: string) {
   return new Date(latest).toISOString();
 }
 
-function computeState(): ApplicationState {
-  ensureApplicationData(USER_ID, APPLICATION_ID);
-  const applicationRecord = getApplicationRecord(APPLICATION_ID);
-  const entity = readApplicationState();
+async function computeState(): Promise<ApplicationState> {
+  await ensureApplicationData(USER_ID, APPLICATION_ID);
+  const applicationRecord = await getApplicationRecord(APPLICATION_ID);
+  const entity = await readApplicationState();
   const verifiedByType = new Set<DocumentType>();
   for (const document of entity.documents) {
     if (document.status === "verified") {
@@ -270,7 +242,7 @@ function runAutomatedVerification(args: {
   existingChecksums: Set<string>;
 }): VerificationResult {
   const checks: VerificationCheck[] = [];
-  const extension = getExtension(args.fileName);
+  const extension = getFileExtension(args.fileName);
   const mimeTypes = allowedMimeTypes[args.documentType];
   const extensions = allowedExtensions[args.documentType];
   const detectedSignature = detectFileSignature(args.bytes);
@@ -438,13 +410,13 @@ function runAutomatedVerification(args: {
   };
 }
 
-function updateDocumentResult(documentId: string, result: VerificationResult) {
-  const document = getDocumentById(documentId);
+async function updateDocumentResult(documentId: string, result: VerificationResult) {
+  const document = await getDocumentById(documentId);
   if (!document) {
     return;
   }
 
-  const updated = updateDocument(documentId, {
+  const updated = await updateDocument(documentId, {
     status: result.status,
     authenticityScore: result.authenticityScore,
     rejectionReason: result.rejectionReason,
@@ -455,8 +427,8 @@ function updateDocumentResult(documentId: string, result: VerificationResult) {
     return;
   }
 
-  appendVerificationChecks(document.applicationId, documentId, result.checks);
-  appendApplicationEvent({
+  await appendVerificationChecks(document.applicationId, documentId, result.checks);
+  await appendApplicationEvent({
     applicationId: document.applicationId,
     eventType: "document_result_updated",
     payload: {
@@ -471,9 +443,7 @@ function updateDocumentResult(documentId: string, result: VerificationResult) {
 export async function enqueueUpload(documentType: DocumentType, file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const checksum = await sha256Hex(bytes);
-  const existingChecksums = listChecksumsForApplication(APPLICATION_ID);
-  const uploadedAt = new Date().toISOString();
-  const { user, application } = ensureApplicationData(USER_ID, APPLICATION_ID);
+  const existingChecksums = await listChecksumsForApplication(APPLICATION_ID);
   const result = runAutomatedVerification({
     fileName: file.name,
     fileSize: file.size,
@@ -483,38 +453,24 @@ export async function enqueueUpload(documentType: DocumentType, file: File) {
     bytes,
     existingChecksums,
   });
-  const pendingRecord = writeDocument({
-    applicationId: application.id,
-    userId: user.id,
+  const uploadSession = await requestUploadSession({
+    applicationId: APPLICATION_ID,
+    userId: USER_ID,
+    documentType,
     fileName: file.name,
     fileSize: file.size,
     mimeType: file.type || "application/octet-stream",
     checksum,
-    documentType,
-    status: "verifying",
-    authenticityScore: 0,
-    uploadedAt,
-  });
-
-  appendApplicationEvent({
-    applicationId: application.id,
-    eventType: "document_added",
-    payload: {
-      documentId: pendingRecord.id,
-      documentType,
-      checksum,
-      fileName: file.name,
-    },
   });
 
   const randomDelay = 900 + Math.floor(Math.random() * 1400);
   setTimeout(() => {
-    updateDocumentResult(pendingRecord.id, result);
+    void updateDocumentResult(uploadSession.document.id, result);
   }, randomDelay);
 
-  return { documentId: pendingRecord.id };
+  return { documentId: uploadSession.document.id, uploadToken: uploadSession.token };
 }
 
-export function getApplicationState() {
+export async function getApplicationState() {
   return computeState();
 }

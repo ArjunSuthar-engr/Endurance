@@ -32,9 +32,18 @@ Endurance is a student document intake portal for study-abroad applications with
 
 ## Active Execution Plan
 
-- Active plan file: `implementation_plan.md`
-- Current plan step: Step 4 — Add authentication and role model
-- Current step rationale: Step 2 completed runtime env validation, CSP/headers, and security middleware baseline.
+- Active plan file: `implementationplan.md`
+- Current plan step: Step 2 — Secure Upload Ingress (Replace Client-Only Upload Logic)
+- Current step rationale: Upload now enters through `request-upload-session` API action (`/api/application`), validates declared document metadata server-side, and creates a protected object key placeholder before verification transitions.
+- Next action: add full server-side authenticity workers and immutable check records in Step 3.
+
+## Constraint Baseline Lock (Step 0)
+
+- Required documents are fixed to six types in `src/lib/student-application-schema.ts`:
+  - `passport`, `transcript`, `bankStatement`, `statementOfPurpose`, `resume`, `englishTest`.
+- Home page intake remains a single path: homepage CTAs route to `/portal`.
+- Current storage remains local/demo-only (`localStorage` in `src/lib/application-store.ts`) and is not production-truth.
+- Production implementation must use backend persistence before claiming full constraint compliance.
 
 ## Implemented Files
 - `src/app/portal/page.tsx`
@@ -51,7 +60,7 @@ Endurance is a student document intake portal for study-abroad applications with
 - `README.md`
 - `.env.example`
 - `next.config.ts`
-- `implementation_plan.md`
+- `implementationplan.md`
 - `src/lib/server-config.ts`
 - `middleware.ts`
 - `src/lib/application-store.ts`
@@ -75,6 +84,11 @@ Endurance is a student document intake portal for study-abroad applications with
 - The verification state is now persisted in-browser via a local persistence layer (`localStorage`-backed demo table model).
 - For production: move the same table model to server-backed DB/object storage.
 - `tmp_pdf/` is excluded from source control.
+- upload flow bug fix: switched ID generation from extracted `randomUUID` function to direct crypto invocation to prevent `Illegal invocation` in browsers where detached method calls are disallowed.
+- Non-negotiable constraint coverage:
+  - Automated authenticity checks must run on every uploaded document.
+  - Missing required files must trigger explicit missing-document notifications.
+  - State and progress must update automatically after each upload and verification result.
 
 ## Immediate Next Changes (when requested)
 1. Add stronger document authenticity checks (OCR / anti-tamper service).

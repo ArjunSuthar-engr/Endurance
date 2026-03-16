@@ -11,7 +11,6 @@ import {
 } from "@/lib/student-application-schema";
 import { validateUploadRequest } from "@/lib/document-policy";
 
-const STORAGE_KEY = "endurance-application-store-v1";
 const DEMO_USER_ID = "demo-user-student";
 const DEMO_APPLICATION_ID = "APP-STUDENT-0001";
 const UPLOAD_SESSION_TTL_MS = 15 * 60 * 1000;
@@ -49,13 +48,18 @@ type UploadSession = {
   expiresAt: string;
 };
 
-type ApplicationTables = {
+type BackendApplicationStore = {
   users: UserRecord[];
   applications: ApplicationRecord[];
   documents: Array<ApplicationDocumentRecord>;
   verificationChecks: VerificationCheckRecord[];
   alerts: ApplicationAlertRecord[];
   events: ApplicationEventRecord[];
+  uploadSessions: Record<string, UploadSession>;
+};
+
+type AppGlobalStore = {
+  __enduranceBackendStore?: BackendApplicationStore;
 };
 
 function createId(prefix: string) {
@@ -67,31 +71,17 @@ function createId(prefix: string) {
   return `${prefix}_${Date.now()}-${Math.floor(Math.random() * 999_999_999)}`;
 }
 
-function createUploadToken(prefix: string) {
-  return createId(prefix);
-}
-
 function nowIso() {
   return new Date().toISOString();
 }
 
-function getEmptyStore(): ApplicationTables {
-  return {
-    users: [],
-    applications: [],
-    documents: [],
-    verificationChecks: [],
-    alerts: [],
-    events: [],
-  };
+function nowUtcMs() {
+  return Date.now();
 }
 
-const inMemoryFallbackStore: ApplicationTables = getEmptyStore();
-const inMemoryUploadSessions: Record<string, UploadSession> = {};
-let initialized = false;
-
-function isBrowser() {
-  return typeof window !== "undefined";
+function createObjectKey(applicationId: string, userId: string, documentId: string, fileName: string) {
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_").toLowerCase();
+  return `private/${applicationId}/${userId}/${documentId}/${safeName}`;
 }
 
 function createDefaultUser(): UserRecord {
@@ -118,130 +108,91 @@ function createDefaultApplication(userId: string): ApplicationRecord {
   };
 }
 
-function getObjectKey(applicationId: string, userId: string, documentId: string, fileName: string) {
-  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_").toLowerCase();
-  return `private/${applicationId}/${userId}/${documentId}/${safeName}`;
+function getStore(): BackendApplicationStore {
+  const globalForStore = globalThis as unknown as AppGlobalStore;
+  if (!globalForStore.__enduranceBackendStore) {
+    const seedUser = createDefaultUser();
+    const seedApplication = createDefaultApplication(seedUser.id);
+    globalForStore.__enduranceBackendStore = {
+      users: [seedUser],
+      applications: [seedApplication],
+      documents: [],
+      verificationChecks: [],
+      alerts: [],
+      events: [],
+      uploadSessions: {},
+    };
+  }
+
+  return globalForStore.__enduranceBackendStore;
 }
 
-function pruneUploadSessions() {
-  const now = Date.now();
-  for (const [token, session] of Object.entries(inMemoryUploadSessions)) {
+function pruneUploadSessions(store: BackendApplicationStore) {
+  const now = nowUtcMs();
+  for (const [token, session] of Object.entries(store.uploadSessions)) {
     if (Date.parse(session.expiresAt) < now) {
-      delete inMemoryUploadSessions[token];
+      delete store.uploadSessions[token];
     }
   }
 }
 
-function hydrateTable(): ApplicationTables {
-  if (!isBrowser()) {
-    if (!initialized) {
-      if (inMemoryFallbackStore.users.length === 0) {
-        const user = createDefaultUser();
-        inMemoryFallbackStore.users.push(user);
-        inMemoryFallbackStore.applications.push(createDefaultApplication(user.id));
-      }
-
-      initialized = true;
-    }
-
-    return inMemoryFallbackStore;
+function ensureUser(userId: string) {
+  const store = getStore();
+  let user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    user = createDefaultUser();
+    user.id = userId;
+    store.users.push(user);
   }
 
-  if (!initialized) {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as Partial<ApplicationTables>;
-        if (Array.isArray(parsed.users) && Array.isArray(parsed.applications)) {
-          inMemoryFallbackStore.users = parsed.users ?? [];
-          inMemoryFallbackStore.applications = parsed.applications ?? [];
-          inMemoryFallbackStore.documents = parsed.documents ?? [];
-          inMemoryFallbackStore.verificationChecks = parsed.verificationChecks ?? [];
-          inMemoryFallbackStore.alerts = parsed.alerts ?? [];
-          inMemoryFallbackStore.events = parsed.events ?? [];
-        }
-      } catch (error) {
-        console.warn("[persistence] Falling back to in-memory seed due to invalid state file.");
-      }
-    }
-
-    if (inMemoryFallbackStore.users.length === 0) {
-      const user = createDefaultUser();
-      inMemoryFallbackStore.users.push(user);
-      inMemoryFallbackStore.applications.push(createDefaultApplication(user.id));
-      persistStore(inMemoryFallbackStore);
-    }
-
-    initialized = true;
-  }
-
-  return inMemoryFallbackStore;
-}
-
-function persistStore(store: ApplicationTables) {
-  if (!isBrowser()) {
-    return;
-  }
-
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  return user;
 }
 
 function ensureApplication(applicationId: string, userId: string) {
-  const store = hydrateTable();
+  const store = getStore();
   let application = store.applications.find((item) => item.id === applicationId);
   if (!application) {
     application = createDefaultApplication(userId);
     application.id = applicationId;
     store.applications.push(application);
-    persistStore(store);
-  } else if (application.userId !== userId) {
+    return application;
+  }
+
+  if (application.userId !== userId) {
     throw new Error("Unauthorized application access.");
   }
 
   return application;
 }
 
-function ensureUser(userId: string) {
-  const store = hydrateTable();
-  let user = store.users.find((item) => item.id === userId);
-  if (!user) {
-    user = createDefaultUser();
-    user.id = userId;
-    store.users.push(user);
-    persistStore(store);
-  }
-
-  return user;
-}
-
 export function getUsersStore() {
-  return hydrateTable();
+  return getStore();
 }
 
 export function ensureApplicationData(userId: string = DEMO_USER_ID, applicationId: string = DEMO_APPLICATION_ID) {
-  const store = hydrateTable();
+  const store = getStore();
   const user = ensureUser(userId);
   const application = ensureApplication(applicationId, user.id);
   return { user, application };
 }
 
 export function getApplicationRecord(applicationId: string) {
-  return hydrateTable().applications.find((item) => item.id === applicationId) ?? null;
+  return getStore().applications.find((item) => item.id === applicationId) ?? null;
 }
 
 export function getDocumentsForApplication(applicationId: string) {
-  return hydrateTable().documents.filter((document) => document.applicationId === applicationId);
+  return getStore().documents.filter((document) => document.applicationId === applicationId);
 }
 
 export function getDocumentById(documentId: string) {
-  return hydrateTable().documents.find((document) => document.id === documentId) ?? null;
+  return getStore().documents.find((document) => document.id === documentId) ?? null;
 }
 
 export function writeDocument(input: NewDocumentInput, id?: string): ApplicationDocumentRecord {
-  const store = hydrateTable();
+  const store = getStore();
   const documentId = id ?? createId("doc");
   const now = nowIso();
-  const existing = store.documents.find((document) => document.id === documentId);
+
   const document: ApplicationDocumentRecord = {
     id: documentId,
     applicationId: input.applicationId,
@@ -261,17 +212,17 @@ export function writeDocument(input: NewDocumentInput, id?: string): Application
     updatedAt: now,
   };
 
-  if (existing) {
-    store.documents = store.documents.filter((item) => item.id !== documentId);
+  const existingIndex = store.documents.findIndex((document) => document.id === documentId);
+  if (existingIndex >= 0) {
+    store.documents.splice(existingIndex, 1);
   }
 
-  store.documents = [document, ...store.documents.filter((item) => item.id !== documentId)];
-  persistStore(store);
+  store.documents = [document, ...store.documents];
   return document;
 }
 
 export function updateDocument(documentId: string, patch: Partial<ApplicationDocumentRecord>) {
-  const store = hydrateTable();
+  const store = getStore();
   const index = store.documents.findIndex((document) => document.id === documentId);
   if (index === -1) {
     return null;
@@ -283,12 +234,11 @@ export function updateDocument(documentId: string, patch: Partial<ApplicationDoc
     updatedAt: nowIso(),
   };
 
-  persistStore(store);
   return store.documents[index];
 }
 
 export function appendVerificationChecks(applicationId: string, documentId: string, checks: VerificationCheck[]) {
-  const store = hydrateTable();
+  const store = getStore();
   const checkIds: string[] = [];
   const createdAt = nowIso();
 
@@ -308,34 +258,30 @@ export function appendVerificationChecks(applicationId: string, documentId: stri
 
   const document = getDocumentById(documentId);
   if (!document) {
-    persistStore(store);
     return [];
   }
 
   document.checkIds = checkIds;
-  persistStore(store);
   return checkIds;
 }
 
 export function getChecksForDocument(documentId: string) {
-  return hydrateTable().verificationChecks.filter((item) => item.documentId === documentId);
+  return getStore().verificationChecks.filter((item) => item.documentId === documentId);
 }
 
 export function appendApplicationEvent(input: NewEventInput) {
-  const store = hydrateTable();
+  const store = getStore();
   store.events.push({
     id: createId("evt"),
     applicationId: input.applicationId,
     eventType: input.eventType,
     payload: input.payload,
     createdAt: nowIso(),
-  });
-
-  persistStore(store);
+  } satisfies ApplicationEventRecord);
 }
 
 export function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "resolvedAt">) {
-  const store = hydrateTable();
+  const store = getStore();
   const existing = store.alerts.find(
     (item) => item.dedupeKey === alert.dedupeKey && item.applicationId === alert.applicationId
   );
@@ -347,7 +293,6 @@ export function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "r
     existing.createdAt = now;
     existing.id = alert.id;
     existing.resolvedAt = undefined;
-    persistStore(store);
     return existing;
   }
 
@@ -359,18 +304,16 @@ export function upsertAlert(alert: Omit<ApplicationAlertRecord, "createdAt" | "r
   };
 
   store.alerts.push(record);
-  persistStore(store);
   return record;
 }
 
 export function clearAlerts(applicationId: string) {
-  const store = hydrateTable();
+  const store = getStore();
   store.alerts = store.alerts.filter((item) => item.applicationId !== applicationId);
-  persistStore(store);
 }
 
 export function getAlertsForApplication(applicationId: string) {
-  return hydrateTable().alerts.filter((item) => item.applicationId === applicationId);
+  return getStore().alerts.filter((item) => item.applicationId === applicationId);
 }
 
 export function listChecksumsForApplication(applicationId: string) {
@@ -386,43 +329,41 @@ export function requestUploadSession(input: {
   mimeType: string;
   checksum: string;
 }) {
-  pruneUploadSessions();
+  const store = getStore();
+  pruneUploadSessions(store);
   const validation = validateUploadRequest({
     documentType: input.documentType,
     fileName: input.fileName,
     fileSize: input.fileSize,
     mimeType: input.mimeType,
   });
-
   if (validation.errors.length > 0) {
     throw new Error(validation.errors.join(" "));
   }
 
   const { user, application } = ensureApplicationData(input.userId, input.applicationId);
-  const pending = writeDocument(
-    {
-      applicationId: application.id,
-      userId: user.id,
-      fileName: input.fileName,
-      fileSize: input.fileSize,
-      mimeType: input.mimeType,
-      checksum: input.checksum,
-      documentType: input.documentType,
-      status: "verifying",
-      authenticityScore: 0,
-      uploadedAt: nowIso(),
-    },
-    createUploadToken("doc")
-  );
 
-  const token = createUploadToken("upl");
-  const expiresAt = new Date(Date.now() + UPLOAD_SESSION_TTL_MS).toISOString();
-  const objectKey = getObjectKey(application.id, user.id, pending.id, input.fileName);
-  inMemoryUploadSessions[token] = {
+  const pendingDocument = writeDocument({
+    applicationId: application.id,
+    userId: user.id,
+    fileName: input.fileName,
+    fileSize: input.fileSize,
+    mimeType: input.mimeType,
+    checksum: input.checksum,
+    documentType: input.documentType,
+    status: "verifying",
+    authenticityScore: 0,
+    uploadedAt: nowIso(),
+  });
+
+  const token = createId("upl");
+  const objectKey = createObjectKey(application.id, user.id, pendingDocument.id, input.fileName);
+  const expiresAt = new Date(nowUtcMs() + UPLOAD_SESSION_TTL_MS).toISOString();
+  store.uploadSessions[token] = {
     token,
     applicationId: application.id,
     userId: user.id,
-    documentId: pending.id,
+    documentId: pendingDocument.id,
     fileName: input.fileName,
     fileSize: input.fileSize,
     mimeType: input.mimeType,
@@ -430,13 +371,13 @@ export function requestUploadSession(input: {
     objectKey,
     expiresAt,
   };
-  pending.objectKey = objectKey;
+  pendingDocument.objectKey = objectKey;
 
   return {
     token,
     objectKey,
     expiresAt,
-    document: pending,
+    document: pendingDocument,
   };
 }
 

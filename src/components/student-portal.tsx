@@ -76,12 +76,20 @@ function getRequirementStatus(documentType: DocumentType, documents: UploadedDoc
   return "missing";
 }
 
-function loadState() {
+async function loadState() {
   return getApplicationState();
 }
 
 export function StudentPortal() {
-  const [state, setState] = useState<ApplicationState>(loadState());
+  const [state, setState] = useState<ApplicationState>({
+    applicationId: "APP-STUDENT-0001",
+    progressPercent: 0,
+    requiredDocuments: [...requiredDocumentTypes],
+    missingDocuments: [...requiredDocumentTypes],
+    uploadedDocuments: [],
+    alerts: [],
+    updatedAt: new Date().toISOString(),
+  });
   const [selectedType, setSelectedType] = useState<DocumentType>("passport");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -93,21 +101,31 @@ export function StudentPortal() {
   useEffect(() => {
     let disposed = false;
 
-    const refresh = () => {
-      const nextState = loadState();
-      if (disposed) {
-        return;
-      }
+    const refresh = async () => {
+      try {
+        const nextState = await loadState();
+        if (disposed) {
+          return;
+        }
 
-      setState(nextState);
-      setReady(true);
-      setError("");
+        setState(nextState);
+        setReady(true);
+        setError("");
+      } catch (submissionError) {
+        if (disposed) {
+          return;
+        }
+
+        setError(
+          submissionError instanceof Error ? submissionError.message : "Unable to refresh application state."
+        );
+      }
     };
 
     refresh();
 
     const intervalId = window.setInterval(() => {
-      refresh();
+      void refresh();
     }, 1200);
 
     return () => {
@@ -129,7 +147,7 @@ export function StudentPortal() {
 
     try {
       await enqueueUpload(selectedType, selectedFile);
-      setState(loadState());
+      setState(await loadState());
       setError("");
 
       setSelectedFile(null);

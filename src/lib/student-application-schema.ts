@@ -34,6 +34,7 @@ export type UploadedDocument = {
   fileName: string;
   fileSize: number;
   mimeType: string;
+  objectKey?: string;
   checksum: string;
   documentType: DocumentType;
   status: VerificationStatus;
