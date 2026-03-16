@@ -35,7 +35,7 @@ Endurance is a student document intake portal for study-abroad applications with
 - Active plan file: `implementationplan.md`
 - Current plan step: Step 3 — Automated Authenticity Pipeline (Core Constraint)
 - Current step rationale: UI has been simplified (removed page grid/pattern backgrounds), and Step 3 is now ready to implement.
-- Next action: run every verification check in the server-side pipeline and persist immutable check records.
+- Current step progress: Step 3 is implemented using a server-run authenticity pipeline and immutable check persistence.
 
 ## Constraint Baseline Lock (Step 0)
 
@@ -89,6 +89,19 @@ Endurance is a student document intake portal for study-abroad applications with
   - Automated authenticity checks must run on every uploaded document.
   - Missing required files must trigger explicit missing-document notifications.
   - State and progress must update automatically after each upload and verification result.
+
+## Step 3 Completion Notes
+
+- Added `src/lib/verification-engine.ts` to centralize server-side verification checks and scoring logic.
+- Added `analyze-upload` API action in `src/app/api/application/route.ts` to run:
+  - extension policy
+  - MIME policy
+  - file-size policy
+  - binary signature validation
+  - checksum and duplicate detection
+  - filename intent/risk checks
+- Updated upload flow in `src/lib/student-application-service.ts` so each upload calls server analysis, persists `checks` per document, and then stores final status.
+- New client API contract (`analyzeUpload`) lives in `src/lib/application-backend-client.ts`.
 
 ## Immediate Next Changes (when requested)
 1. Add stronger document authenticity checks (OCR / anti-tamper service).

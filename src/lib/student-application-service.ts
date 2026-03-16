@@ -7,7 +7,6 @@ import {
   type UploadedDocument,
   type VerificationCheck,
 } from "@/lib/student-application-schema";
-import { ALLOWED_EXTENSIONS, ALLOWED_MIME_TYPES, MAX_FILE_SIZE_BYTES, MIN_FILE_SIZE_BYTES, getFileExtension } from "@/lib/document-policy";
 import {
   DEMO_APPLICATION_ID,
   DEMO_USER_ID,
@@ -22,6 +21,7 @@ import {
   updateDocument,
   requestUploadSession,
 } from "@/lib/application-data-source";
+import { analyzeUpload } from "@/lib/application-backend-client";
 
 type VerificationResult = {
   status: "verified" | "rejected";
@@ -37,78 +37,6 @@ type AppEntity = {
 
 const APPLICATION_ID = DEMO_APPLICATION_ID;
 const USER_ID = DEMO_USER_ID;
-
-const MIN_SCORE_TO_VERIFY = 70;
-
-const filenameSignals: Record<DocumentType, string[]> = {
-  passport: ["passport"],
-  transcript: ["transcript", "marksheet", "academic"],
-  bankStatement: ["bank", "statement", "balance"],
-  statementOfPurpose: ["sop", "statement", "purpose"],
-  resume: ["resume", "cv"],
-  englishTest: ["ielts", "toefl", "pte", "duolingo", "english"],
-};
-
-const magicSignatures = {
-  pdf: [0x25, 0x50, 0x44, 0x46],
-  png: [0x89, 0x50, 0x4e, 0x47],
-  jpg: [0xff, 0xd8, 0xff],
-};
-
-function hasSignature(bytes: Uint8Array, signature: number[]) {
-  if (bytes.length < signature.length) {
-    return false;
-  }
-
-  return signature.every((value, index) => bytes[index] === value);
-}
-
-function detectFileSignature(bytes: Uint8Array): "pdf" | "png" | "jpg" | "unknown" {
-  if (hasSignature(bytes, magicSignatures.pdf)) {
-    return "pdf";
-  }
-
-  if (hasSignature(bytes, magicSignatures.png)) {
-    return "png";
-  }
-
-  if (hasSignature(bytes, magicSignatures.jpg)) {
-    return "jpg";
-  }
-
-  return "unknown";
-}
-
-function toHex(value: ArrayLike<number>) {
-  return Array.from(value)
-    .map((part) => part.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function sha256Hex(bytes: Uint8Array) {
-  if (!globalThis.crypto?.subtle) {
-    throw new Error("Web Crypto API not available.");
-  }
-
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return toHex(new Uint8Array(digest));
-}
-
-function expectedSignaturesByExtension(extension: string): Array<"pdf" | "png" | "jpg"> {
-  if (extension === ".pdf") {
-    return ["pdf"];
-  }
-
-  if (extension === ".png") {
-    return ["png"];
-  }
-
-  if (extension === ".jpg" || extension === ".jpeg") {
-    return ["jpg"];
-  }
-
-  return [];
-}
 
 async function withDocumentChecks(document: UploadedDocument): Promise<UploadedDocument> {
   const checks = await getChecksForDocument(document.id);
@@ -232,184 +160,6 @@ async function computeState(): Promise<ApplicationState> {
   };
 }
 
-function runAutomatedVerification(args: {
-  fileName: string;
-  fileSize: number;
-  mimeType: string;
-  checksum: string;
-  documentType: DocumentType;
-  bytes: Uint8Array;
-  existingChecksums: Set<string>;
-}): VerificationResult {
-  const checks: VerificationCheck[] = [];
-  const extension = getFileExtension(args.fileName);
-  const mimeTypes = allowedMimeTypes[args.documentType];
-  const extensions = allowedExtensions[args.documentType];
-  const detectedSignature = detectFileSignature(args.bytes);
-  const expectedSignatures = expectedSignaturesByExtension(extension);
-  const signatureMatches =
-    detectedSignature !== "unknown" && expectedSignatures.includes(detectedSignature);
-  const filenameRisky = /(edited|copy|final|v\d+|scan|mobile|screenshot)/i.test(args.fileName);
-  const normalizedName = args.fileName.toLowerCase();
-
-  if (!extensions.includes(extension)) {
-    checks.push({
-      code: "extension",
-      label: "File extension policy",
-      status: "fail",
-      detail: `Extension ${extension || "(missing)"} not allowed for ${documentTypeLabels[args.documentType]}.`,
-    });
-  } else {
-    checks.push({
-      code: "extension",
-      label: "File extension policy",
-      status: "pass",
-      detail: `Extension ${extension} accepted.`,
-    });
-  }
-
-  if (!args.mimeType || args.mimeType === "application/octet-stream") {
-    checks.push({
-      code: "mime-type",
-      label: "MIME type policy",
-      status: "warn",
-      detail: "Browser supplied a generic MIME type. Signature checks are used as fallback.",
-    });
-  } else if (!mimeTypes.includes(args.mimeType)) {
-    checks.push({
-      code: "mime-type",
-      label: "MIME type policy",
-      status: "fail",
-      detail: `MIME ${args.mimeType} is not permitted for ${documentTypeLabels[args.documentType]}.`,
-    });
-  } else {
-    checks.push({
-      code: "mime-type",
-      label: "MIME type policy",
-      status: "pass",
-      detail: `MIME ${args.mimeType} accepted.`,
-    });
-  }
-
-  if (args.fileSize > MAX_FILE_SIZE_BYTES) {
-    checks.push({
-      code: "size",
-      label: "File size bounds",
-      status: "fail",
-      detail: "File exceeds 12MB limit.",
-    });
-  } else if (args.fileSize < MIN_FILE_SIZE_BYTES) {
-    checks.push({
-      code: "size",
-      label: "File size bounds",
-      status: "warn",
-      detail: "File is unusually small and may be incomplete.",
-    });
-  } else {
-    checks.push({
-      code: "size",
-      label: "File size bounds",
-      status: "pass",
-      detail: "File size falls within expected range.",
-    });
-  }
-
-  if (expectedSignatures.length === 0 || !signatureMatches) {
-    checks.push({
-      code: "signature",
-      label: "Binary signature integrity",
-      status: "fail",
-      detail: `Detected signature ${detectedSignature} does not match ${extension || "file type"}.`,
-    });
-  } else {
-    checks.push({
-      code: "signature",
-      label: "Binary signature integrity",
-      status: "pass",
-      detail: `Signature check matched ${detectedSignature}.`,
-    });
-  }
-
-  if (args.existingChecksums.has(args.checksum)) {
-    checks.push({
-      code: "duplicate",
-      label: "Duplicate detection",
-      status: "fail",
-      detail: "Identical file already uploaded in this application.",
-    });
-  } else {
-    checks.push({
-      code: "duplicate",
-      label: "Duplicate detection",
-      status: "pass",
-      detail: "No duplicate content hash found.",
-    });
-  }
-
-  if (filenameRisky) {
-    checks.push({
-      code: "filename-risk",
-      label: "Filename hygiene signal",
-      status: "warn",
-      detail: "Filename pattern suggests potential manual edits. Review recommended.",
-    });
-  } else {
-    checks.push({
-      code: "filename-risk",
-      label: "Filename hygiene signal",
-      status: "pass",
-      detail: "Filename does not indicate risky edit markers.",
-    });
-  }
-
-  const semanticMatch = filenameSignals[args.documentType].some((signal) => normalizedName.includes(signal));
-  checks.push({
-    code: "document-intent",
-    label: "Declared document intent",
-    status: semanticMatch ? "pass" : "warn",
-    detail: semanticMatch
-      ? "Filename matches the declared document type."
-      : "Filename does not clearly indicate the declared document type.",
-  });
-
-  let authenticityScore = 100;
-  for (const check of checks) {
-    if (check.status === "warn") {
-      authenticityScore -= 10;
-    } else if (check.status === "fail") {
-      authenticityScore -= 35;
-    }
-  }
-  authenticityScore = Math.max(0, authenticityScore);
-
-  const hasHardFailure = checks.some((check) => check.status === "fail");
-  const verified = !hasHardFailure && authenticityScore >= MIN_SCORE_TO_VERIFY;
-
-  if (verified) {
-    return {
-      status: "verified",
-      authenticityScore,
-      checks,
-    };
-  }
-
-  const failingChecks = checks
-    .filter((check) => check.status === "fail")
-    .map((check) => check.label)
-    .slice(0, 2)
-    .join(", ");
-
-  return {
-    status: "rejected",
-    authenticityScore,
-    checks,
-    rejectionReason:
-      failingChecks.length > 0
-        ? `Automated validation failed: ${failingChecks}.`
-        : "Authenticity score below required threshold.",
-  };
-}
-
 async function updateDocumentResult(documentId: string, result: VerificationResult) {
   const document = await getDocumentById(documentId);
   if (!document) {
@@ -440,18 +190,30 @@ async function updateDocumentResult(documentId: string, result: VerificationResu
   });
 }
 
+function toBase64(bytes: Uint8Array) {
+  const chunkSize = 8192;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
 export async function enqueueUpload(documentType: DocumentType, file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const checksum = await sha256Hex(bytes);
+  const mimeType = file.type || "application/octet-stream";
   const existingChecksums = await listChecksumsForApplication(APPLICATION_ID);
-  const result = runAutomatedVerification({
+  const analysis = await analyzeUpload({
+    applicationId: APPLICATION_ID,
+    userId: USER_ID,
+    documentType,
     fileName: file.name,
     fileSize: file.size,
-    mimeType: file.type || "application/octet-stream",
-    checksum,
-    documentType,
-    bytes,
-    existingChecksums,
+    mimeType,
+    contentBase64: toBase64(bytes),
+    existingChecksums: Array.from(existingChecksums),
   });
   const uploadSession = await requestUploadSession({
     applicationId: APPLICATION_ID,
@@ -459,14 +221,11 @@ export async function enqueueUpload(documentType: DocumentType, file: File) {
     documentType,
     fileName: file.name,
     fileSize: file.size,
-    mimeType: file.type || "application/octet-stream",
-    checksum,
+    mimeType,
+    checksum: analysis.checksum,
   });
 
-  const randomDelay = 900 + Math.floor(Math.random() * 1400);
-  setTimeout(() => {
-    void updateDocumentResult(uploadSession.document.id, result);
-  }, randomDelay);
+  await updateDocumentResult(uploadSession.document.id, analysis.result);
 
   return { documentId: uploadSession.document.id, uploadToken: uploadSession.token };
 }

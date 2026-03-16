@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import {
   appendApplicationEvent as appendEvent,
   appendVerificationChecks as appendChecks,
@@ -19,6 +20,7 @@ import {
   type NewEventInput,
 } from "@/lib/server-application-store";
 import { isDocumentType, type DocumentType, type VerificationCheck } from "@/lib/student-application-schema";
+import { runAuthenticityVerification } from "@/lib/verification-engine";
 
 type ActionRequest = {
   action: string;
@@ -30,6 +32,8 @@ type ActionRequest = {
   fileSize?: number;
   mimeType?: string;
   checksum?: string;
+  contentBase64?: string;
+  existingChecksums?: unknown;
   document?: NewDocumentInput;
   patch?: Record<string, unknown>;
   checks?: VerificationCheck[];
@@ -38,6 +42,23 @@ type ActionRequest = {
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
+}
+
+function base64ToBytes(input: string) {
+  const buffer = Buffer.from(input, "base64");
+  return new Uint8Array(buffer);
+}
+
+function sha256Hex(bytes: Uint8Array) {
+  return createHash("sha256").update(Buffer.from(bytes)).digest("hex");
+}
+
+function parseChecksumList(raw: unknown) {
+  if (!Array.isArray(raw)) {
+    return new Set<string>();
+  }
+
+  return new Set(raw.filter((item): item is string => typeof item === "string"));
 }
 
 export async function GET(request: NextRequest) {
@@ -175,6 +196,35 @@ export async function POST(request: NextRequest) {
     } catch (error) {
       return jsonError(error instanceof Error ? error.message : "Invalid upload request", 400);
     }
+  }
+
+  if (action === "analyze-upload") {
+    if (
+      typeof body.applicationId !== "string" ||
+      typeof body.userId !== "string" ||
+      typeof body.fileName !== "string" ||
+      typeof body.documentType !== "string" ||
+      !isDocumentType(body.documentType) ||
+      typeof body.fileSize !== "number" ||
+      typeof body.mimeType !== "string" ||
+      typeof body.contentBase64 !== "string"
+    ) {
+      return jsonError("Missing upload analysis fields");
+    }
+
+    const bytes = base64ToBytes(body.contentBase64);
+    const checksum = sha256Hex(bytes);
+    const result = runAuthenticityVerification({
+      fileName: body.fileName,
+      fileSize: body.fileSize,
+      mimeType: body.mimeType,
+      checksum,
+      documentType: body.documentType,
+      bytes,
+      existingChecksums: parseChecksumList(body.existingChecksums),
+    });
+
+    return NextResponse.json({ checksum, result });
   }
 
   if (action === "update-document") {

@@ -39,6 +39,27 @@ export type UploadSessionInput = {
   checksum: string;
 };
 
+export type UploadAnalysisInput = {
+  applicationId: string;
+  userId: string;
+  documentType: DocumentType;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  contentBase64: string;
+  existingChecksums: string[];
+};
+
+export type UploadAnalysisResponse = {
+  checksum: string;
+  result: {
+    status: "verified" | "rejected";
+    authenticityScore: number;
+    checks: VerificationCheck[];
+    rejectionReason?: string;
+  };
+};
+
 export type UploadSessionResponse = {
   token: string;
   objectKey: string;
@@ -125,6 +146,16 @@ export async function requestUploadSession(input: UploadSessionInput) {
     method: "POST",
     body: JSON.stringify({
       action: "request-upload-session",
+      ...input,
+    }),
+  });
+}
+
+export async function analyzeUpload(input: UploadAnalysisInput) {
+  return requestJson<UploadAnalysisResponse>(API_BASE, {
+    method: "POST",
+    body: JSON.stringify({
+      action: "analyze-upload",
       ...input,
     }),
   });
