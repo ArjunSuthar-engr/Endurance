@@ -1,5 +1,5 @@
 ﻿const DEFAULT_APP_ENV = "development";
-const isProductionLike = process.env.APP_ENV === "production" || process.env.NODE_ENV === "production";
+const isNodeProduction = process.env.NODE_ENV === "production";
 
 type AppEnv = "development" | "staging" | "production";
 type VerificationMode = "async" | "sync";
@@ -57,7 +57,7 @@ function isVerificationMode(value: string): value is VerificationMode {
 function readRequiredEnvironmentValue(name: string, requiredInProduction: boolean) {
   const value = process.env[name];
 
-  if (!isProductionLike || !requiredInProduction) {
+  if (!requiredInProduction || !isNodeProduction) {
     return value ?? "";
   }
 
@@ -148,10 +148,10 @@ export const serverConfig: ServerConfig = {
   sessionTimeoutSeconds: parseNumber("SESSION_TTL_SECONDS", readRequiredEnvironmentValue("SESSION_TTL_SECONDS", isProduction), 60),
   rateLimitPerMinute: parseNumber("API_RATE_LIMIT_RPM", readRequiredEnvironmentValue("API_RATE_LIMIT_RPM", false), 1),
   security: {
-    requireHttps: parseBoolean("FORCE_HTTPS", process.env.FORCE_HTTPS, isProductionLike || isProduction),
+    requireHttps: parseBoolean("FORCE_HTTPS", process.env.FORCE_HTTPS, isNodeProduction),
     session: {
       name: process.env.SESSION_COOKIE_NAME ?? "endurance_session",
-      secure: parseBoolean("SESSION_COOKIE_SECURE", process.env.SESSION_COOKIE_SECURE, isProductionLike || isProduction),
+      secure: parseBoolean("SESSION_COOKIE_SECURE", process.env.SESSION_COOKIE_SECURE, isNodeProduction),
       sameSite: "lax",
       path: "/",
       maxAgeSeconds: parseNumber("SESSION_TTL_SECONDS", readRequiredEnvironmentValue("SESSION_TTL_SECONDS", isProduction), 60),
