@@ -61,7 +61,7 @@ export function getApplicationDataSourceMode() {
   return CURRENT_DATA_SOURCE_MODE;
 }
 
-export function getUsersStore(): { users: UserRecord[] } {
+export function getUsersStore(): Promise<{ users: UserRecord[] }> {
   if (useBackendStore) {
     return backendStore.getUsersStore();
   }
