@@ -21,12 +21,14 @@ import {
   listChecksumsForApplication,
   resolveAlert,
   ensureApplicationData,
+  getApplicationDataSourceMode,
   upsertAlert,
   updateDocument,
   requestUploadSession,
 } from "@/lib/application-data-source";
 import { analyzeUpload } from "@/lib/application-backend-client";
 import { evaluateAlertRules } from "@/lib/application-alert-rules";
+import { runAuthenticityVerification } from "@/lib/verification-engine";
 
 type VerificationResult = {
   status: "verified" | "rejected";
@@ -145,7 +147,7 @@ async function updateDocumentResult(documentId: string, result: VerificationResu
 
 async function syncApplicationAlerts(applicationId: string, documents: UploadedDocument[]) {
   const evaluation = evaluateAlertRules(documents);
-  const desiredKeys = new Set(evaluation.alerts.map((alert) => alert.dedupeKey));
+  const desiredKeys = new Set<string>(evaluation.alerts.map((alert) => alert.dedupeKey));
   const currentAlerts = await getAlertsForApplication(applicationId);
 
   for (const alert of evaluation.alerts) {
@@ -182,6 +184,13 @@ function toBase64(bytes: Uint8Array) {
   }
 
   return btoa(binary);
+}
+
+async function sha256Hex(bytes: Uint8Array) {
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes));
+  return Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function scoreChecks(checks: VerificationCheck[]) {
@@ -281,16 +290,32 @@ export async function enqueueUpload(documentType: DocumentType, file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const mimeType = file.type || "application/octet-stream";
   const existingChecksums = await listChecksumsForApplication(APPLICATION_ID);
-  const analysis = await analyzeUpload({
-    applicationId: APPLICATION_ID,
-    userId: USER_ID,
-    documentType,
-    fileName: file.name,
-    fileSize: file.size,
-    mimeType,
-    contentBase64: toBase64(bytes),
-    existingChecksums: Array.from(existingChecksums),
-  });
+  const mode = getApplicationDataSourceMode();
+  const checksum = await sha256Hex(bytes);
+  const analysis =
+    mode === "server-backend"
+      ? await analyzeUpload({
+          applicationId: APPLICATION_ID,
+          userId: USER_ID,
+          documentType,
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType,
+          contentBase64: toBase64(bytes),
+          existingChecksums: Array.from(existingChecksums),
+        })
+      : {
+          checksum,
+          result: runAuthenticityVerification({
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType,
+            checksum,
+            documentType,
+            bytes,
+            existingChecksums,
+          }),
+        };
   const uploadSession = await requestUploadSession({
     applicationId: APPLICATION_ID,
     userId: USER_ID,
