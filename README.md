@@ -8,6 +8,7 @@ Endurance is a student application and document verification portal for study-ab
 
 ```bash
 npm install
+npm run build
 npm run dev
 ```
 
